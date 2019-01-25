@@ -13,6 +13,19 @@ cryptocurrencies, including test networks and several fiat currencies.
 The interface is strongly typed to avoid problems, since this is important
 for security,
 
+Logging
+-------
+
+The version `0.1.1` of this crate introduces ability to log events using
+[`slog`](https://crates.io/crates/slog). It does so without introducing
+backwards-incompatibility or performance penalty. It's also very easy to setup.
+
+All you need is to enable feature `slog` and then pass your logger using
+`set_logger()` method on `CDPayBuilder`. The simplicity of this should enable
+you to chain the `slog` feature with your own crate easily.
+
+All logs are discarded by default and not even generated when `slog` feature is turned off.
+
 Disclaimer
 ----------
 

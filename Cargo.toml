@@ -1,6 +1,6 @@
 [package]
 name = "cdpay"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Martin Habovštiak <martin.habovstiak@gmail.com>"]
 description = "CryptoDiggers payment API client."
 categories = ["api-bindings", "network-programming"]
@@ -8,6 +8,10 @@ keywords = ["CryptoDiggers", "payment", "Bitcoin", "cryptocurrency", "API"]
 license = "MITNFA"
 readme = "README.md"
 repository = "https://github.com/Kixunil/cdpay"
+
+[package.metadata.docs.rs]
+features = ["slog"]
+all-features = true
 
 [features]
 default = []

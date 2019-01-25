@@ -33,6 +33,13 @@ extern crate serde_json;
 extern crate urlencoding;
 extern crate tokio_retry;
 
+#[cfg(feature = "slog")]
+#[macro_use]
+extern crate slog;
+
+#[macro_use]
+mod logging;
+
 use tokio_core::reactor::Handle;
 use hyper::Client;
 use std::fmt;
@@ -47,6 +54,8 @@ use native_tls::Error as TlsError;
 use urlencoding::encode as url_encode;
 use tokio_retry::RetryIf;
 pub use tokio_retry::Error as RetryError;
+
+use logging::Logger;
 
 /// Information about payment
 #[derive(Debug)]
@@ -68,7 +77,8 @@ pub struct PaymentInfo {
 }
 
 impl PaymentInfo {
-    fn new(internal: PaymentInfoInternal, handle: Handle, is_testnet: bool) -> Self {
+    fn new(internal: PaymentInfoInternal, handle: Handle, is_testnet: bool, logger: Logger) -> Self {
+        let logger = logging::logger_with_iframe_id(&logger, &internal.iframe_id);
         PaymentInfo {
             address: internal.address,
             amount: internal.amount,
@@ -79,6 +89,7 @@ impl PaymentInfo {
                 iframe_id: internal.iframe_id,
                 handle,
                 is_testnet,
+                logger,
             }
         }
     }
@@ -104,6 +115,7 @@ struct PaymentHandleInternal {
     iframe_id: String,
     is_testnet: bool,
     handle: Handle,
+    logger: Logger,
 }
 
 impl tokio_retry::Action for PaymentHandleInternal {
@@ -115,6 +127,8 @@ impl tokio_retry::Action for PaymentHandleInternal {
         use futures::IntoFuture;
 
         let url = format!("https://www.cryptodiggers{}.eu/api/api.php?iframe={}&a=get_iframe_status", if self.is_testnet { "test" } else { "" }, url_encode(&self.iframe_id));
+        debug!(self.logger, "Querying status"; "url" => &url);
+        let logger = self.logger.clone();
         let url = url.parse().unwrap();
         let https_connector = HttpsConnector::new(4, &self.handle);
         let https_connector = match https_connector {
@@ -127,14 +141,15 @@ impl tokio_retry::Action for PaymentHandleInternal {
         Box::new(client
             .get(url)
             .map_err(Into::into)
-            .and_then(|res| {
+            .and_then(move |res| {
                 if res.status() == StatusCode::Ok {
+                    debug!(logger, "Status: 200 OK");
                     let vec = res.headers().get::<ContentLength>().and_then(|len| if len.0 < 1_000_000 { Some(Vec::with_capacity(len.0 as usize)) } else { None }).unwrap_or_else(Vec::new);
                     // TODO: Limit
                     Either::A(res.body()
                         .map_err(APIError::from)
                         .fold(vec, |mut vec, chunk| -> Result<_, APIError> { vec.extend_from_slice(&chunk); Ok(vec) })
-                        .and_then(|vec| {
+                        .and_then(move |vec| {
                             let mut reader = &vec as &[u8];
                             // Hook to remove PHP dump
                             // TODO: Remove
@@ -148,11 +163,21 @@ impl tokio_retry::Action for PaymentHandleInternal {
                             }
                             // END OF Hook to remove PHP dump
 
-                            let response: StatusResponse = serde_json::from_reader(&mut reader)?;
+                            #[cfg(feature = "slog")]
+                            std::str::from_utf8(&reader)
+                                .map(|s| debug!(logger, "Received response"; "response_data" => s))
+                                .unwrap_or_else(|error| error!(logger, "Failed to parse response as UTF-8"; "error" => %error));
+
+                            let response: StatusResponse = serde_json::from_reader(&mut reader)
+                                .map_err(|error| {
+                                    error!(logger,"Failed to parse response"; "error" => %error);
+                                    error
+                                })?;
                             
                             Ok(response)
                         }))
                 } else {
+                    error!(logger, "HTTP request failed."; "status" => %res.status());
                     Either::B(Err(APIError::UnexpectedStatus(res.status())).into_future())
                 }
             })
@@ -186,6 +211,7 @@ pub struct PaymentHandle {
     iframe_id: String,
     is_testnet: bool,
     handle: Handle,
+    logger: Logger,
 }
 
 impl PaymentHandle {
@@ -203,6 +229,7 @@ impl PaymentHandle {
             iframe_id: self.iframe_id,
             is_testnet: self.is_testnet,
             handle: self.handle.clone(),
+            logger: self.logger,
         };
 
         let strategy = tokio_retry::strategy::FixedInterval::new(Duration::from_secs(5));
@@ -467,6 +494,7 @@ pub struct CDPayBuilder {
     handle: Handle,
     api_key: String,
     is_testnet: bool,
+    logger: logging::Logger,
 }
 
 impl CDPayBuilder {
@@ -476,6 +504,7 @@ impl CDPayBuilder {
             handle: tokio_handle,
             api_key,
             is_testnet: false,
+            logger: logging::default_logger(),
         }
     }
 
@@ -489,7 +518,24 @@ impl CDPayBuilder {
             handle: tokio_handle,
             api_key,
             is_testnet: true,
+            logger: logging::default_logger(),
         }
+    }
+
+    /// Sets the logger for this instance.
+    ///
+    /// This function creates a child logger that logs network kind.
+    ///
+    /// Only available if `slog` feature is enabled.
+    #[cfg(feature = "slog")]
+    pub fn set_logger(&mut self, logger: &slog::Logger) {
+        let network = if self.is_testnet {
+            "testnet"
+        } else {
+            "mainnet"
+        };
+
+        self.logger = logger.new(o!("network" => network, "api_key" => self.api_key.clone()));
     }
 
     /// Requests new payment.
@@ -500,6 +546,9 @@ impl CDPayBuilder {
                          if self.is_testnet { "test" } else { "" }, url_encode(&self.api_key), u8::from(request_data.timeout), request_data.order_id.as_ref(),
                          request_data.amount / 100, request_data.amount % 100, request_data.fiat_currency as u8, request_data.crypto_currency as u8,
                          request_data.wait_for_confirmantions as u8);
+
+        let logger = logging::order_logger(&self.logger, &request_data.order_id);
+        info!(logger, "Initiating payment"; "url" => &url, "timeout" => ?request_data.timeout, "amount" => request_data.amount, "fiat_currency" => ?request_data.fiat_currency, "crypto_currency" => ?request_data.crypto_currency, "wait_for_confirmations" => %request_data.wait_for_confirmantions);
         let url = url.parse().unwrap();
         let client = Client::configure()
             .connector(HttpsConnector::new(4, &self.handle)?)
@@ -513,6 +562,8 @@ impl CDPayBuilder {
             .map_err(Into::into)
             .and_then(move |res| {
                 if res.status() == StatusCode::Ok {
+                    debug!(logger, "Status: 200 OK");
+
                     let vec = res.headers().get::<ContentLength>().and_then(|len| if len.0 < 1_000_000 { Some(Vec::with_capacity(len.0 as usize)) } else { None }).unwrap_or_else(Vec::new);
                     // TODO: Limit
                     Either::A(res.body()
@@ -520,12 +571,20 @@ impl CDPayBuilder {
                         .fold(vec, |mut vec, chunk| -> Result<_, APIError> { vec.extend_from_slice(&chunk); Ok(vec) })
                         .and_then(move |vec| {
                             let mut reader = &vec as &[u8];
-                            let _ = std::str::from_utf8(&reader).map(|s| eprintln!("Received message: {}", s));
-                            let mut response: InitResponse = serde_json::from_reader(&mut reader)?;
+                            #[cfg(feature = "slog")]
+                            std::str::from_utf8(&reader)
+                                .map(|s| debug!(logger, "Received response"; "response_data" => s))
+                                .unwrap_or_else(|error| error!(logger, "Failed to parse response as UTF-8"; "error" => %error));
+                            let mut response: InitResponse = serde_json::from_reader(&mut reader)
+                                .map_err(|error| {
+                                    error!(logger,"Failed to parse response"; "error" => %error);
+                                    error
+                                })?;
                             
                             if response.error == 0 {
-                                response.address.pop().map(|internal| PaymentInfo::new(internal, handle, is_testnet)).ok_or(APIError::MissingData)
+                                response.address.pop().map(|internal| PaymentInfo::new(internal, handle, is_testnet, logger)).ok_or(APIError::MissingData)
                             } else {
+                                error!(logger,"API call failed"; "error_code" => response.error, "error_message" => &response.error_msg);
                                 Err(APIError::Error { code: response.error, message: response.error_msg })
                             }
                         }))

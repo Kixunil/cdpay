@@ -21,6 +21,8 @@
 //! 
 //! Do **not** use this software if you are in fear of being ridiculed!
 
+#![deny(missing_docs)]
+
 extern crate futures;
 extern crate hyper;
 extern crate hyper_tls;
@@ -268,10 +270,13 @@ struct InitResponse {
 /// Error that might happen when communicating with payment API.
 #[derive(Debug)]
 pub enum APIError {
+    /// Data returned from the server was incomplete.
     MissingData,
     /// Error returned by the server as specified by the API.
     Error {
+        /// Error code as defined by CryptoDiggers API.
         code: u64,
+        /// Readable error message as defined by CryptoDiggers API.
         message: String,
     },
     /// Parsing the responnse as json failed.
@@ -294,7 +299,12 @@ pub enum PaymentError {
     /// Communication failed
     Communication(APIError),
     /// Other error returned by te server.
-    Other { status_id: u64, status_message: Option<String> },
+    Other {
+        /// Status ID returned by the server.
+        status_id: u64,
+        /// Status message returned by the server.
+        status_message: Option<String>
+    },
 }
 
 impl From<StatusResponse> for Result<(), Option<PaymentError>> {
@@ -397,10 +407,14 @@ impl<'a> AsRef<str> for OrderID {
 }
 
 macro_rules! enum_number {
-    ($name:ident { $($variant:ident = $value:expr, )* }) => {
+    ($(#[$enum_attr:meta])* $name:ident { $($(#[$variant_attr:meta])* $variant:ident = $value:expr, )* }) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        $(#[$enum_attr])*
         pub enum $name {
-            $($variant = $value,)*
+            $(
+                $(#[$variant_attr])*
+                $variant = $value,
+            )*
         }
 
         impl ::serde::Serialize for $name {
@@ -446,24 +460,45 @@ macro_rules! enum_number {
     }
 }
 
-enum_number!(FiatCurrency {
-    Eur = 1,
-    USD = 2,
-    GBP = 3,
-    CAD = 4,
-    AUD = 5,
-    JPY = 9,
-    CNY = 13,
-    CZK = 16,
-    AED = 17,
-});
+enum_number!(
+    /// Enum representing available fiat currencies. (Those defined by local mostly tolerated
+    /// violent group.)
+    FiatCurrency {
+        /// Euro
+        Eur = 1,
+        /// US Dollar
+        USD = 2,
+        /// Great Britain Pound
+        GBP = 3,
+        /// Canadian Dollar
+        CAD = 4,
+        /// Australian Dollar
+        AUD = 5,
+        /// Japanese Yen
+        JPY = 9,
+        /// Chinese Yen
+        CNY = 13,
+        /// Czech Crown
+        CZK = 16,
+        /// United Arab Emirates Dirham
+        AED = 17,
+    }
+);
 
-enum_number!(CryptoCurrency {
-    BTC = 6,
-    WDC = 7,
-    LTC = 8,
-    Dash = 19,
-});
+enum_number!(
+    /// Enum representing available crypto currencies. (Regulated by cryptography as opposed to by
+    /// violent force.)
+    CryptoCurrency {
+        /// Bitcoin
+        BTC = 6,
+        /// Worldcoin
+        WDC = 7,
+        /// Litecoin
+        LTC = 8,
+        /// Dash
+        Dash = 19,
+    }
+);
 
 type InitRequest = Box<Future<Item=PaymentInfo, Error=APIError>>;
 

@@ -1,6 +1,6 @@
 [package]
 name = "cdpay"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Martin Habovštiak <martin.habovstiak@gmail.com>"]
 description = "CryptoDiggers payment API client."
 categories = ["api-bindings", "network-programming"]

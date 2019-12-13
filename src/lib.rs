@@ -134,7 +134,7 @@ struct PaymentHandleInternal {
 }
 
 impl tokio_retry::Action for PaymentHandleInternal {
-    type Future = Box<Future<Item=Self::Item, Error=Self::Error>>;
+    type Future = Box<dyn Future<Item=Self::Item, Error=Self::Error>>;
     type Item = ();
     type Error = Option<PaymentError>;
 
@@ -513,7 +513,7 @@ enum_number!(
     }
 );
 
-type InitRequest = Box<Future<Item=PaymentInfo, Error=APIError>>;
+type InitRequest = Box<dyn Future<Item=PaymentInfo, Error=APIError>>;
 
 /// Contains all information required to initiate the payment.
 pub struct RequestData {
@@ -587,7 +587,7 @@ impl CDPayBuilder {
     }
 
     /// Requests new payment.
-    pub fn init_payment_request(&self, request_data: &RequestData) -> Result<InitRequest, TlsError> {
+    pub fn request_payment(&self, request_data: &RequestData) -> Result<impl Future<Item=PaymentInfo, Error=APIError>, TlsError> {
         use futures::IntoFuture;
 
         let url = format!("https://www.cryptodiggers{}.eu/api/api.php?apikey={}&a=new_address&timeout={}&order_id={}&amount={}.{}&currency={}&currency_crypto={}&wait={}",
@@ -605,7 +605,7 @@ impl CDPayBuilder {
         let is_testnet = self.is_testnet;
         let handle = self.handle.clone();
 
-        Ok(Box::new(client
+        Ok(client
             .get(url)
             .map_err(Into::into)
             .and_then(move |res| {
@@ -639,6 +639,14 @@ impl CDPayBuilder {
                 } else {
                     Either::B(Err(APIError::UnexpectedStatus(res.status())).into_future())
                 }
-            })) as InitRequest)
+            }))
+    }
+
+    /// Requests new payment.
+    ///
+    /// This is a backwards-compatible API returning `Box<dyn Future>`. You might prefer
+    /// `request_payment` method instead.
+    pub fn init_payment_request(&self, request_data: &RequestData) -> Result<InitRequest, TlsError> {
+        self.request_payment(request_data).map(|future| Box::new(future) as InitRequest)
     }
 }
